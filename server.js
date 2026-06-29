@@ -6,31 +6,55 @@ const FormData = require('form-data');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { exec } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024 } });
+const upload = multer({ 
+  dest: os.tmpdir(),
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
 
 app.use(cors());
 app.use(express.json());
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'TranscriptVault backend running' });
 });
 
-// ── TRANSCRIBE via OpenAI Whisper ──
+// Convert any video to mp3 using ffmpeg
+function convertToMp3(inputPath) {
+  return new Promise((resolve, reject) => {
+    const outputPath = inputPath + '.mp3';
+    exec(`ffmpeg -i "${inputPath}" -vn -ar 44100 -ac 2 -b:a 192k "${outputPath}" -y`, (err) => {
+      if (err) reject(err);
+      else resolve(outputPath);
+    });
+  });
+}
+
 app.post('/transcribe', upload.single('file'), async (req, res) => {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) return res.status(500).json({ error: 'OpenAI API key not configured.' });
-
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
 
+  const supportedFormats = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'];
+  const ext = (req.file.originalname || '').split('.').pop().toLowerCase();
+  
+  let filePath = req.file.path;
+  let convertedPath = null;
+
   try {
+    // Convert unsupported formats to mp3 using ffmpeg
+    if (!supportedFormats.includes(ext)) {
+      convertedPath = await convertToMp3(filePath);
+      filePath = convertedPath;
+    }
+
     const form = new FormData();
-    form.append('file', fs.createReadStream(req.file.path), {
-      filename: req.file.originalname || 'audio.mp4',
-      contentType: req.file.mimetype || 'video/mp4',
+    form.append('file', fs.createReadStream(filePath), {
+      filename: 'audio.mp3',
+      contentType: 'audio/mpeg',
     });
     form.append('model', 'whisper-1');
     form.append('response_format', 'verbose_json');
@@ -51,7 +75,6 @@ app.post('/transcribe', upload.single('file'), async (req, res) => {
       return res.status(response.status).json({ error: data.error?.message || 'Whisper API error' });
     }
 
-    // Format segments with timestamps
     const segments = (data.segments || []).map(seg => ({
       time: formatTime(seg.start),
       text: seg.text.trim(),
@@ -73,8 +96,8 @@ app.post('/transcribe', upload.single('file'), async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message || 'Transcription failed.' });
   } finally {
-    // Clean up temp file
     if (req.file?.path) fs.unlink(req.file.path, () => {});
+    if (convertedPath) fs.unlink(convertedPath, () => {});
   }
 });
 
