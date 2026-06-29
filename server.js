@@ -9,7 +9,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer({ dest: os.tmpdir() });
+const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json());
