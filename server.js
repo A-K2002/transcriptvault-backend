@@ -268,6 +268,44 @@ app.get('/transcribe-url', async (req, res) => {
   });
 });
 
+// ── STRIPE CHECKOUT ──
+app.post('/create-checkout-session', express.json(), async (req, res) => {
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeKey) return res.status(500).json({ error: 'Stripe not configured on server.' });
+
+  const { priceId, successUrl, cancelUrl } = req.body;
+  if (!priceId || !successUrl || !cancelUrl) {
+    return res.status(400).json({ error: 'Missing required fields.' });
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.append('mode', 'subscription');
+    params.append('line_items[0][price]', priceId);
+    params.append('line_items[0][quantity]', '1');
+    params.append('success_url', successUrl);
+    params.append('cancel_url', cancelUrl);
+
+    const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data.error?.message || 'Stripe error' });
+    }
+
+    res.json({ url: data.url });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Checkout session creation failed.' });
+  }
+});
+
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
