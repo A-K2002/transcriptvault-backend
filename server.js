@@ -63,17 +63,13 @@ app.post('/transcribe', upload.single('file'), async (req, res) => {
 
   let filePath = req.file.path;
   let convertedPath = null;
-  let filename = originalName;
-  let mimeType = req.file.mimetype || 'video/mp4';
+  let filename = 'audio.mp3';
+  let mimeType = 'audio/mpeg';
 
   try {
-    if (!nativeFormats.includes(ext)) {
-      // Needs conversion (mov, avi, mkv, etc.)
-      convertedPath = await convertToMp3(filePath);
-      filePath = convertedPath;
-      filename = 'audio.mp3';
-      mimeType = 'audio/mpeg';
-    }
+    // Always compress to mp3 to guarantee we stay under Whisper's 25MB limit
+    convertedPath = await convertToMp3(filePath);
+    filePath = convertedPath;
 
     const form = new FormData();
     form.append('file', fs.createReadStream(filePath), {
