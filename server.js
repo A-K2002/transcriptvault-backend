@@ -6,12 +6,13 @@ const FormData = require('form-data');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer({ 
+const upload = multer({
   dest: os.tmpdir(),
-  limits: { fileSize: 500 * 1024 * 1024 }
+  limits: { fileSize: 200 * 1024 * 1024 } // 200MB
 });
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type'] }));
@@ -21,6 +22,36 @@ app.get('/', (req, res) => {
   res.json({ status: 'TranscriptVault backend running' });
 });
 
+// Convert to compressed mp3 using ffmpeg spawn (more memory-safe than exec)
+function convertToMp3(inputPath) {
+  return new Promise((resolve, reject) => {
+    const outputPath = inputPath + '_converted.mp3';
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', inputPath,
+      '-vn',              // no video
+      '-ar', '16000',     // lower sample rate = smaller file, Whisper-friendly
+      '-ac', '1',          // mono
+      '-b:a', '64k',       // lower bitrate = smaller file
+      '-f', 'mp3',
+      '-y',
+      outputPath
+    ]);
+
+    let stderr = '';
+    ffmpeg.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        resolve(outputPath);
+      } else {
+        reject(new Error('ffmpeg conversion failed: ' + stderr.slice(-300)));
+      }
+    });
+
+    ffmpeg.on('error', (err) => reject(err));
+  });
+}
+
 app.post('/transcribe', upload.single('file'), async (req, res) => {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) return res.status(500).json({ error: 'OpenAI API key not configured.' });
@@ -28,20 +59,24 @@ app.post('/transcribe', upload.single('file'), async (req, res) => {
 
   const originalName = req.file.originalname || 'audio.mp4';
   const ext = originalName.split('.').pop().toLowerCase();
+  const nativeFormats = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm'];
 
-  // Map extensions to mime types Whisper accepts
-  const mimeMap = {
-    mp4: 'video/mp4', mov: 'video/mp4', avi: 'video/mp4',
-    mkv: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg',
-    m4a: 'audio/mp4', wav: 'audio/wav', flac: 'audio/flac',
-    ogg: 'audio/ogg', oga: 'audio/ogg', mpga: 'audio/mpeg',
-  };
-  const mimeType = mimeMap[ext] || 'video/mp4';
-  const filename = `audio.${ext === 'mov' || ext === 'avi' || ext === 'mkv' ? 'mp4' : ext}`;
+  let filePath = req.file.path;
+  let convertedPath = null;
+  let filename = originalName;
+  let mimeType = req.file.mimetype || 'video/mp4';
 
   try {
+    if (!nativeFormats.includes(ext)) {
+      // Needs conversion (mov, avi, mkv, etc.)
+      convertedPath = await convertToMp3(filePath);
+      filePath = convertedPath;
+      filename = 'audio.mp3';
+      mimeType = 'audio/mpeg';
+    }
+
     const form = new FormData();
-    form.append('file', fs.createReadStream(req.file.path), {
+    form.append('file', fs.createReadStream(filePath), {
       filename: filename,
       contentType: mimeType,
     });
@@ -78,9 +113,11 @@ app.post('/transcribe', upload.single('file'), async (req, res) => {
     });
 
   } catch (err) {
+    console.error('Transcription error:', err.message);
     res.status(500).json({ error: err.message || 'Transcription failed.' });
   } finally {
     if (req.file?.path) fs.unlink(req.file.path, () => {});
+    if (convertedPath) fs.unlink(convertedPath, () => {});
   }
 });
 
